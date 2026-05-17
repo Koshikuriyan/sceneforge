@@ -27,7 +27,7 @@ ${batch.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
           "Authorization": `Bearer ${groqKey.trim()}`
         },
         body: JSON.stringify({
-          model: "llama3-8b-8192",
+          "model": "llama-3.3-70b-versatile",
           messages: [{ role: "user", content: prompt }],
           max_tokens: 1000,
           temperature: 0.3
