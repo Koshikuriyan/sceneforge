@@ -1,8 +1,6 @@
 "use client";
 import { useState, useCallback } from "react";
 
-
-
 function Checkbox({ checked, onChange, label }) {
   return (
     <label style={s.checkLabel} onClick={() => onChange(!checked)}>
@@ -14,10 +12,37 @@ function Checkbox({ checked, onChange, label }) {
   );
 }
 
+async function downloadFile(url, filename) {
+  try {
+    const res = await fetch(url);
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = blobUrl;
+    a.download = filename || "footage";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(blobUrl);
+  } catch {
+    window.open(url, "_blank");
+  }
+}
+
 function SceneCard({ scene, index }) {
   const [selected, setSelected] = useState([]);
+  const [downloading, setDownloading] = useState(null);
+
   const toggle = (id) =>
     setSelected((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
+  const handleDownload = async (e, item) => {
+    e.stopPropagation();
+    setDownloading(item.id);
+    const ext = item.type === "video" ? "mp4" : "jpg";
+    await downloadFile(item.downloadUrl || item.thumb, `sceneforge-${item.id}.${ext}`);
+    setDownloading(null);
+  };
 
   return (
     <div style={s.sceneCard}>
@@ -40,15 +65,13 @@ function SceneCard({ scene, index }) {
               <span style={s.srcBadge}>{item.source}</span>
               {selected.includes(item.id) && <div style={s.overlay}>✓</div>}
             </div>
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={s.openBtn}
-              onClick={(e) => e.stopPropagation()}
+            <button
+              style={{ ...s.dlBtn, ...(downloading === item.id ? s.dlBtnLoading : {}) }}
+              onClick={(e) => handleDownload(e, item)}
+              disabled={downloading === item.id}
             >
-              ↓ Open & Download
-            </a>
+              {downloading === item.id ? "⟳ Downloading..." : "↓ Download"}
+            </button>
           </div>
         ))}
       </div>
@@ -58,6 +81,7 @@ function SceneCard({ scene, index }) {
 
 export default function SceneForge() {
   const [script, setScript] = useState("");
+  const [groqKey, setGroqKey] = useState("");
   const [pexelsKey, setPexelsKey] = useState("");
   const [pixabayKey, setPixabayKey] = useState("");
   const [resultsPerSentence, setResultsPerSentence] = useState(10);
@@ -76,6 +100,7 @@ export default function SceneForge() {
 
   const run = useCallback(async () => {
     if (!script.trim()) return setError("Please paste your script.");
+    if (!groqKey.trim()) return setError("Please enter your Groq API key.");
     if (!pexelsKey.trim() && !pixabayKey.trim())
       return setError("Enter at least one API key (Pexels or Pixabay).");
     if (!useVideos && !usePhotos) return setError("Select at least Videos or Photos.");
@@ -84,7 +109,7 @@ export default function SceneForge() {
     setError("");
     setScenes([]);
     setLoading(true);
-    setStatus("🤖 Sending script to AI for analysis...");
+    setStatus("🤖 Sending script to Groq AI for analysis...");
 
     try {
       const sentences = script
@@ -98,21 +123,19 @@ export default function SceneForge() {
         return;
       }
 
-      // Call our secure API route
       const aiRes = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sentences, batchSize }),
+        body: JSON.stringify({ sentences, batchSize, groqKey }),
       });
       const aiData = await aiRes.json();
       if (aiData.error) throw new Error(aiData.error);
 
       const parsed = aiData.results;
       const allScenes = [];
-      const perSource = Math.max(2, Math.ceil(resultsPerSentence / (
-        [usePexels, usePixabay].filter(Boolean).length *
-        [useVideos, usePhotos].filter(Boolean).length
-      )));
+      const sourcesEnabled = [usePexels, usePixabay].filter(Boolean).length;
+      const typesEnabled = [useVideos, usePhotos].filter(Boolean).length;
+      const perSource = Math.max(2, Math.ceil(resultsPerSentence / (sourcesEnabled * typesEnabled)));
 
       for (let i = 0; i < parsed.length; i++) {
         const { sentence, query } = parsed[i];
@@ -127,9 +150,18 @@ export default function SceneForge() {
                 { headers: { Authorization: pexelsKey.trim() } }
               );
               const d = await r.json();
-              (d.videos || []).forEach((v) =>
-                results.push({ id: `pv${v.id}`, type: "video", thumb: v.image, url: v.url, alt: query, source: "Pexels" })
-              );
+              (d.videos || []).forEach((v) => {
+                const file = v.video_files?.find(f => f.quality === "hd") || v.video_files?.[0];
+                results.push({
+                  id: `pv${v.id}`,
+                  type: "video",
+                  thumb: v.image,
+                  url: v.url,
+                  downloadUrl: file?.link || v.url,
+                  alt: query,
+                  source: "Pexels"
+                });
+              });
             } catch {}
           }
           if (usePhotos) {
@@ -140,7 +172,15 @@ export default function SceneForge() {
               );
               const d = await r.json();
               (d.photos || []).forEach((p) =>
-                results.push({ id: `pp${p.id}`, type: "photo", thumb: p.src.medium, url: p.url, alt: p.alt || query, source: "Pexels" })
+                results.push({
+                  id: `pp${p.id}`,
+                  type: "photo",
+                  thumb: p.src.medium,
+                  url: p.url,
+                  downloadUrl: p.src.original,
+                  alt: p.alt || query,
+                  source: "Pexels"
+                })
               );
             } catch {}
           }
@@ -153,9 +193,18 @@ export default function SceneForge() {
                 `https://pixabay.com/api/videos/?key=${pixabayKey.trim()}&q=${encodeURIComponent(query)}&per_page=${perSource}`
               );
               const d = await r.json();
-              (d.hits || []).forEach((v) =>
-                results.push({ id: `xv${v.id}`, type: "video", thumb: v.videos?.medium?.thumbnail || v.userImageURL, url: `https://pixabay.com/videos/id-${v.id}/`, alt: query, source: "Pixabay" })
-              );
+              (d.hits || []).forEach((v) => {
+                const file = v.videos?.large?.url || v.videos?.medium?.url || "";
+                results.push({
+                  id: `xv${v.id}`,
+                  type: "video",
+                  thumb: v.videos?.medium?.thumbnail || v.userImageURL,
+                  url: `https://pixabay.com/videos/id-${v.id}/`,
+                  downloadUrl: file,
+                  alt: query,
+                  source: "Pixabay"
+                });
+              });
             } catch {}
           }
           if (usePhotos) {
@@ -165,7 +214,15 @@ export default function SceneForge() {
               );
               const d = await r.json();
               (d.hits || []).forEach((p) =>
-                results.push({ id: `xp${p.id}`, type: "photo", thumb: p.webformatURL, url: p.pageURL, alt: p.tags || query, source: "Pixabay" })
+                results.push({
+                  id: `xp${p.id}`,
+                  type: "photo",
+                  thumb: p.webformatURL,
+                  url: p.pageURL,
+                  downloadUrl: p.largeImageURL,
+                  alt: p.tags || query,
+                  source: "Pixabay"
+                })
               );
             } catch {}
           }
@@ -182,13 +239,12 @@ export default function SceneForge() {
     } finally {
       setLoading(false);
     }
-  }, [script, pexelsKey, pixabayKey, resultsPerSentence, minLength, batchSize, useVideos, usePhotos, usePexels, usePixabay]);
+  }, [script, groqKey, pexelsKey, pixabayKey, resultsPerSentence, minLength, batchSize, useVideos, usePhotos, usePexels, usePixabay]);
 
   return (
     <div style={s.root}>
       <div style={s.gridBg} />
       <div style={s.wrap}>
-        {/* Header */}
         <div style={s.header}>
           <div style={s.logoRow}>
             <span style={s.logoHex}>⬡</span>
@@ -197,47 +253,59 @@ export default function SceneForge() {
           <p style={s.tagline}>AI Script → Stock Footage Engine for Faceless YouTube Creators</p>
         </div>
 
-        {/* Script */}
         <div style={s.section}>
           <label style={s.sectionLabel}>YOUR SCRIPT</label>
           <textarea
             value={script}
             onChange={(e) => setScript(e.target.value)}
-            placeholder={"Paste your full faceless YouTube script here...\n\nEvery sentence will be analyzed by AI and matched to stock footage from Pexels and Pixabay."}
+            placeholder={"Paste your full faceless YouTube script here...\n\nEvery sentence will be analyzed by Groq AI and matched to stock footage from Pexels and Pixabay."}
             style={s.textarea}
             rows={12}
           />
         </div>
 
-        {/* API Keys */}
         <div style={s.section}>
           <label style={s.sectionLabel}>API KEYS</label>
           <div style={s.keysGrid}>
             <div>
-              <div style={s.keyLabel}>GOOGLE GEMINI API KEY <span style={s.required}>*REQUIRED — 100% FREE</span></div>
-              <input type="password" placeholder="AIza..." value={""} readOnly style={s.input}
-                title="Set as GEMINI_API_KEY in Vercel Environment Variables — never paste here" />
-              <div style={s.hint}>Get free key → aistudio.google.com → Get API Key → no credit card needed</div>
+              <div style={s.keyLabel}>GROQ API KEY <span style={s.required}>*REQUIRED — FREE</span></div>
+              <input
+                type="text"
+                placeholder="gsk_..."
+                value={groqKey}
+                onChange={(e) => setGroqKey(e.target.value)}
+                style={s.input}
+              />
+              <div style={s.hint}>console.groq.com → API Keys → free account</div>
             </div>
             <div>
               <div style={s.keyLabel}>PEXELS API KEY <span style={s.required}>FREE</span></div>
-              <input type="password" placeholder="Paste Pexels key..." value={pexelsKey}
-                onChange={(e) => setPexelsKey(e.target.value)} style={s.input} />
+              <input
+                type="text"
+                placeholder="Paste Pexels key..."
+                value={pexelsKey}
+                onChange={(e) => setPexelsKey(e.target.value)}
+                style={s.input}
+              />
               <div style={s.hint}>pexels.com/api → free account</div>
             </div>
             <div>
               <div style={s.keyLabel}>PIXABAY API KEY <span style={s.required}>FREE</span></div>
-              <input type="password" placeholder="Paste Pixabay key..." value={pixabayKey}
-                onChange={(e) => setPixabayKey(e.target.value)} style={s.input} />
+              <input
+                type="text"
+                placeholder="Paste Pixabay key..."
+                value={pixabayKey}
+                onChange={(e) => setPixabayKey(e.target.value)}
+                style={s.input}
+              />
               <div style={s.hint}>pixabay.com/api/docs → free account</div>
             </div>
           </div>
         </div>
 
-        {/* Options */}
         <div style={s.section}>
           <label style={s.sectionLabel}>OPTIONS</label>
-          <div style={{...s.optionsGrid, gridTemplateColumns: "1fr 1fr 1fr"}}>
+          <div style={{ ...s.optionsGrid, gridTemplateColumns: "1fr 1fr 1fr" }}>
             <div>
               <div style={s.keyLabel}>RESULTS PER SENTENCE</div>
               <input type="number" min={2} max={20} value={resultsPerSentence}
@@ -265,30 +333,29 @@ export default function SceneForge() {
           </div>
         </div>
 
-        {/* Error */}
         {error && <div style={s.errorBox}>{error}</div>}
 
-        {/* Run Button */}
-        <button style={{ ...s.runBtn, ...(loading ? s.runBtnDisabled : {}) }} onClick={run} disabled={loading}>
+        <button
+          style={{ ...s.runBtn, ...(loading ? s.runBtnDisabled : {}) }}
+          onClick={run}
+          disabled={loading}
+        >
           {loading ? "⟳ PROCESSING..." : "ANALYSE SCRIPT & FIND FOOTAGE"}
         </button>
 
-        {/* Status */}
         {status && (
           <div style={{ ...s.statusBox, ...(status.startsWith("Done") ? s.statusDone : {}) }}>
             {status.startsWith("Done") ? "✓ " : ""}{status}
           </div>
         )}
 
-        {/* Stats */}
         {scenes.length > 0 && (
           <div style={s.statsRow}>
             <span style={s.stat}>🎬 <strong>{totalResults}</strong> results across <strong>{scenes.length}</strong> scenes</span>
-            <span style={s.statHint}>Click thumbnails to select • Click "Open" to download</span>
+            <span style={s.statHint}>Click thumbnails to select • Click Download to save directly</span>
           </div>
         )}
 
-        {/* Scene Cards */}
         {scenes.map((scene, i) => (
           <SceneCard key={i} scene={scene} index={i} />
         ))}
@@ -318,8 +385,7 @@ const s = {
   required: { color: "#e8a87c", marginLeft: "6px" },
   input: { width: "100%", background: "rgba(255,255,255,0.04)", border: `1px solid ${goldBorder}`, borderRadius: "3px", color: "#e8dcc8", padding: "10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", boxSizing: "border-box" },
   hint: { fontSize: "10px", color: "rgba(232,220,200,0.3)", marginTop: "6px", letterSpacing: "0.05em" },
-  optionsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: "20px", marginBottom: "20px" },
-  select: { width: "100%", background: "#111", border: `1px solid ${goldBorder}`, borderRadius: "3px", color: "#e8dcc8", padding: "10px 14px", fontSize: "13px", fontFamily: "inherit", outline: "none", boxSizing: "border-box" },
+  optionsGrid: { display: "grid", gap: "20px", marginBottom: "20px" },
   checkRow: { display: "flex", gap: "28px", flexWrap: "wrap", alignItems: "center" },
   checkLabel: { display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", fontSize: "13px", userSelect: "none" },
   checkbox: { width: "18px", height: "18px", border: `2px solid ${goldBorder}`, borderRadius: "3px", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
@@ -347,5 +413,6 @@ const s = {
   vidBadge: { position: "absolute", top: "6px", left: "6px", background: "rgba(201,168,76,0.88)", color: "#0d0d0d", fontSize: "8px", fontWeight: "bold", padding: "2px 7px", borderRadius: "2px", letterSpacing: "0.05em" },
   srcBadge: { position: "absolute", bottom: "6px", right: "6px", background: "rgba(0,0,0,0.65)", color: "rgba(232,220,200,0.7)", fontSize: "8px", padding: "2px 7px", borderRadius: "2px" },
   overlay: { position: "absolute", inset: 0, background: "rgba(201,168,76,0.22)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "26px", color: gold, fontWeight: "bold" },
-  openBtn: { display: "block", textAlign: "center", padding: "8px", background: "rgba(201,168,76,0.07)", color: "rgba(201,168,76,0.75)", textDecoration: "none", fontSize: "11px", letterSpacing: "0.08em", borderTop: `1px solid rgba(201,168,76,0.1)` },
+  dlBtn: { display: "block", width: "100%", textAlign: "center", padding: "8px", background: "rgba(201,168,76,0.07)", color: "rgba(201,168,76,0.85)", fontSize: "11px", letterSpacing: "0.08em", borderTop: `1px solid rgba(201,168,76,0.1)`, border: "none", cursor: "pointer", fontFamily: "'Courier New', monospace" },
+  dlBtnLoading: { opacity: 0.5, cursor: "not-allowed" },
 };

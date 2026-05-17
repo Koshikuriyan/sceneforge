@@ -2,7 +2,6 @@ export const metadata = {
   title: "SceneForge — AI Script to Stock Footage",
   description: "Paste your faceless YouTube script and find matching stock footage instantly.",
 };
-
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
