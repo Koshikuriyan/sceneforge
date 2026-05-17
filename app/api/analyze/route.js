@@ -1,56 +1,32 @@
 export async function POST(req) {
   try {
-    const { sentences, batchSize } = await req.json();
+    const { sentences } = await req.json();
 
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      return Response.json({ error: "GEMINI_API_KEY not set in Vercel Environment Variables." }, { status: 500 });
-    }
+    const stopWords = new Set([
+      "a","an","the","is","are","was","were","be","been","being","have","has","had",
+      "do","does","did","will","would","could","should","may","might","shall","can",
+      "to","of","in","on","at","by","for","with","about","against","between","into",
+      "through","during","before","after","above","below","from","up","down","out",
+      "and","but","or","nor","so","yet","both","either","neither","not","no",
+      "this","that","these","those","it","its","i","you","he","she","we","they",
+      "what","which","who","whom","there","here","when","where","why","how",
+      "all","each","every","both","few","more","most","other","some","such",
+      "just","than","then","also","very","too","now","only","even","still"
+    ]);
 
-    const batches = [];
-    for (let i = 0; i < sentences.length; i += batchSize) {
-      batches.push(sentences.slice(i, i + batchSize));
-    }
+    const results = sentences.map((sentence) => {
+      const words = sentence
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, "")
+        .split(/\s+/)
+        .filter((w) => w.length > 3 && !stopWords.has(w));
 
-    const allResults = [];
+      const query = words.slice(0, 4).join(" ") || sentence.split(" ").slice(0, 3).join(" ");
 
-    for (const batch of batches) {
-      const prompt = `You are a video editor assistant for faceless YouTube channels. Given these sentences, extract a short, highly visual stock footage search query (3–5 words max) for each one. Be specific and cinematic. Return ONLY a JSON array, no markdown, no extra text:
-[{"sentence": "...", "query": "..."}]
+      return { sentence, query };
+    });
 
-Sentences:
-${batch.map((s, i) => `${i + 1}. ${s}`).join("\n")}`;
-
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { maxOutputTokens: 1000 }
-          })
-        }
-      );
-
-      const data = await res.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-      const clean = text.replace(/```json|```/g, "").trim();
-
-      try {
-        const parsed = JSON.parse(clean);
-        allResults.push(...parsed);
-      } catch {
-        batch.forEach(s => {
-          allResults.push({
-            sentence: s,
-            query: s.split(" ").slice(0, 4).join(" ")
-          });
-        });
-      }
-    }
-
-    return Response.json({ results: allResults });
+    return Response.json({ results });
   } catch (e) {
     return Response.json({ error: e.message }, { status: 500 });
   }
