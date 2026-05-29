@@ -1,5 +1,6 @@
 "use client";
 import { useState, useCallback } from "react";
+import JSZip from "jszip";
 
 function Checkbox({ checked, onChange, label }) {
   return (
@@ -44,52 +45,64 @@ async function downloadSingleFile(url, filename) {
 }
 
 async function buildAndDownloadZip(scenes, selectedPerScene, setZipStatus) {
-  const { default: JSZip } = await import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm");
   const zip = new JSZip();
+
   let total = 0;
+  scenes.forEach((scene, si) => {
+    total += (selectedPerScene[si] || []).length;
+    total += (selectedPerScene[`g${si}`] || []).length;
+  });
+
   let done = 0;
 
-  // count total
+  // Write README
+  const readmeLines = ["SCENEFORGE EXPORT", "=================", ""];
   scenes.forEach((scene, si) => {
     const sel = selectedPerScene[si] || [];
-    total += sel.length;
-    if (scene.ytResults) {
-      // yt not downloadable directly, skip
-    }
-    if (scene.googleResults) {
-      const gSel = (selectedPerScene[`g${si}`] || []);
-      total += gSel.length;
-    }
+    const gSel = selectedPerScene[`g${si}`] || [];
+    if (sel.length === 0 && gSel.length === 0) return;
+    readmeLines.push(`Scene ${String(si + 1).padStart(2, "0")}: "${scene.query}"`);
+    readmeLines.push(`Sentence: ${scene.sentence}`);
+    readmeLines.push(`Clips: ${sel.length} | Images: ${gSel.length}`);
+    readmeLines.push("");
   });
+  zip.file("README.txt", readmeLines.join("\n"));
 
   for (let si = 0; si < scenes.length; si++) {
     const scene = scenes[si];
-    const folderName = `Scene_${si + 1}_${scene.query.replace(/[^a-z0-9]/gi, "_").slice(0, 30)}`;
+    const sceneNum = String(si + 1).padStart(2, "0");
+    const querySlug = scene.query.replace(/[^a-z0-9]/gi, "_").slice(0, 25);
+    const folderName = `Scene_${sceneNum}_${querySlug}`;
     const folder = zip.folder(folderName);
 
+    // Stock footage — clip_01, clip_02...
     const sel = selectedPerScene[si] || [];
+    let clipNum = 1;
     for (const id of sel) {
       const item = scene.results.find(r => r.id === id);
       if (!item) continue;
       const ext = item.type === "video" ? "mp4" : "jpg";
-      const filename = `${item.source}_${item.id}.${ext}`;
-      setZipStatus(`Packing ${done + 1}/${total}: ${filename}`);
+      const filename = `clip_${String(clipNum).padStart(2, "0")}.${ext}`;
+      setZipStatus(`Scene ${si + 1} — Packing ${filename} (${done + 1}/${total})`);
       const result = await fetchBlobAsBase64(item.downloadUrl || item.thumb);
       if (result) folder.file(filename, result.data, { base64: true });
+      clipNum++;
       done++;
     }
 
-    // Google images
+    // Google images — image_01, image_02...
     const gSel = selectedPerScene[`g${si}`] || [];
     if (scene.googleResults && gSel.length > 0) {
       const gFolder = folder.folder("google_images");
+      let imgNum = 1;
       for (const id of gSel) {
         const item = scene.googleResults.find(r => r.id === id);
         if (!item) continue;
-        const filename = `google_${id}.jpg`;
-        setZipStatus(`Packing ${done + 1}/${total}: ${filename}`);
+        const filename = `image_${String(imgNum).padStart(2, "0")}.jpg`;
+        setZipStatus(`Scene ${si + 1} — Packing ${filename} (${done + 1}/${total})`);
         const result = await fetchBlobAsBase64(item.url);
         if (result) gFolder.file(filename, result.data, { base64: true });
+        imgNum++;
         done++;
       }
     }
@@ -100,7 +113,7 @@ async function buildAndDownloadZip(scenes, selectedPerScene, setZipStatus) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = "sceneforge_footage.zip";
+  a.download = "sceneforge_export.zip";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -135,8 +148,6 @@ function SceneCard({ scene, index, selectedPerScene, setSelectedPerScene }) {
     await downloadSingleFile(item.downloadUrl || item.thumb, `sceneforge-${item.id}.${ext}`);
     setDownloading(null);
   };
-
-  const totalSelected = selected.length + gSelected.length;
 
   return (
     <div style={s.sceneCard}>
