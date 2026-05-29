@@ -8,7 +8,12 @@
     "start": "next start"
   },
   "dependencies": {
+    "dependencies": {
     "next": "14.2.30",
+    "react": "^18",
+    "react-dom": "^18",
+    "jszip": "^3.10.1"
+  }
     "react": "^18",
     "react-dom": "^18"
   }
